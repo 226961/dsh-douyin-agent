@@ -157,7 +157,8 @@
     "registry": "https://registry.npmjs.org/"
   },
   "os": [
-    "win32"
+    "win32",
+    "linux"
   ],
   "peerDependencies": {
     "@deepseek-ai/dsh": ">=0.2.0-rc.2 <0.2.1-0 || >=0.2.1-rc.2 <0.3.0-0"

@@ -32,12 +32,42 @@ async function readEdgeFileVersion(file) {
   const result = await execute(shell, ['-NoProfile', '-NonInteractive', '-Command', '[System.Diagnostics.FileVersionInfo]::GetVersionInfo($env:DOUYIN_EDGE_VERSION_FILE).ProductVersion'], { env, timeout: 3000, windowsHide: true, maxBuffer: 2048 });
   return versionOf(result.stdout);
 }
-export async function probeEdgeInstallation({ env = process.env, candidates, exists = existsSync, readVersion = readEdgeFileVersion } = {}) {
+// 非 Windows 宿主：Chromium 系浏览器的常见安装位置，也可用 DOUYIN_BROWSER 直接指定。
+export const POSIX_BROWSER_CANDIDATES = [
+  '/usr/bin/chromium', '/usr/bin/chromium-browser', '/snap/bin/chromium',
+  '/usr/bin/google-chrome', '/usr/bin/google-chrome-stable',
+  '/usr/bin/microsoft-edge', '/usr/bin/microsoft-edge-stable',
+];
+async function readPosixBrowserVersion(file) {
+  try {
+    const result = await execute(file, ['--version'], { timeout: 5000, maxBuffer: 2048 });
+    const parts = String(result.stdout || '').match(/\d+(?:\.\d+){1,3}/)?.[0];
+    if (!parts) return null;
+    const padded = parts.split('.').length === 4 ? parts : parts.split('.').length === 3 ? `${parts}.0` : null;
+    return padded ? versionOf(padded) : null;
+  } catch { return null; }
+}
+export async function probeEdgeInstallation({ env = process.env, candidates, exists = existsSync, readVersion, platform = process.platform } = {}) {
+  const read = typeof readVersion === 'function' ? readVersion : platform === 'win32' ? readEdgeFileVersion : readPosixBrowserVersion;
+  if (platform !== 'win32') {
+    const explicit = typeof env.DOUYIN_BROWSER === 'string' && env.DOUYIN_BROWSER.trim() ? path.normalize(env.DOUYIN_BROWSER.trim()) : null;
+    const files = candidates || (explicit ? [explicit] : POSIX_BROWSER_CANDIDATES);
+    let file = files.find(candidate => exists(candidate));
+    // 没有系统装浏览器时，用 Playwright 自带内核（启动时同样走 executablePath）。
+    if (!file && candidates === undefined && exists === existsSync) {
+      let bundled = null;
+      try { bundled = chromium.executablePath(); } catch {}
+      if (bundled && existsSync(bundled)) file = bundled;
+    }
+    if (!file) return { installed: false, version: null, channel: 'chromium', executablePath: null };
+    let version = null; try { version = versionOf(await read(file)); } catch {}
+    return { installed: true, version, channel: 'chromium', executablePath: path.normalize(file) };
+  }
   const roots = [env.LOCALAPPDATA, env.PROGRAMFILES, env['PROGRAMFILES(X86)'], ...(env.HOMEDRIVE ? [path.join(env.HOMEDRIVE + path.sep, 'Program Files'), path.join(env.HOMEDRIVE + path.sep, 'Program Files (x86)')] : [])].filter(Boolean);
   const files = candidates || roots.map(root => path.join(root, 'Microsoft', 'Edge', 'Application', 'msedge.exe'));
   const file = files.find(candidate => exists(candidate));
   if (!file) return { installed: false, version: null, channel: 'msedge' };
-  let version = null; try { version = versionOf(await readVersion(file)); } catch {}
+  let version = null; try { version = versionOf(await read(file)); } catch {}
   return { installed: true, version, channel: 'msedge' };
 }
 const focusFailure = error => Object.assign(new Error('专用 Edge 未能清除焦点模拟，已保留窗口和草稿，请重新自检。', { cause: error }), { code: 'EDGE_FOCUS_RESET_FAILED' });
@@ -129,10 +159,15 @@ export async function runBrowserHost({ profile, controlDir, port, chromiumImpl =
   try {
     writeState(false, {}, true);
     try { installation = await probeInstallation(); } catch {}
-    context = await chromiumImpl.launchPersistentContext(profile, {
-      channel: 'msedge', headless: false, viewport: null, ignoreDefaultArgs: ['--mute-audio'],
+    // Windows 用 Edge 通道；其他宿主用探测到的 Chromium 系可执行文件（未指定则用 Playwright 自带内核）。
+    const launchOptions = {
+      headless: false, viewport: null, ignoreDefaultArgs: ['--mute-audio'],
       args: [`--remote-debugging-port=${port}`, '--remote-debugging-address=127.0.0.1', '--autoplay-policy=no-user-gesture-required'],
-    });
+    };
+    if (process.platform === 'win32') launchOptions.channel = 'msedge';
+    else if (installation?.executablePath) launchOptions.executablePath = installation.executablePath;
+    if (process.platform !== 'win32' && process.env.DOUYIN_BROWSER_NO_SANDBOX === '1') launchOptions.args.push('--no-sandbox', '--disable-dev-shm-usage');
+    context = await chromiumImpl.launchPersistentContext(profile, launchOptions);
     context.on('close', () => {
       closed = true;
       try { writeState(false, { closedAt: Date.now(), ...(focusFailed ? { launchFailure: { code: 'EDGE_FOCUS_RESET_FAILED', message: '宿主焦点检查失败，专用浏览器已退出。' } } : {}) }); } catch {}

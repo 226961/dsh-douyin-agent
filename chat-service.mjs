@@ -319,7 +319,9 @@ export class ChatService {
       return{resolved:unresolved.length,alreadyHandled:false,checkedAt:at};
     });
   }
-  async listContacts({ signal } = {}) { return this.browser.listContacts({ signal }); }
+  // 设置页「读取联系人与群聊」是本人主动发起的一次性核对：同时读关注名单，
+  // 否则关系永远停在 unverified，界面里没有任何联系人可勾选。
+  async listContacts({ signal } = {}) { return this.browser.listContacts({ signal, verifyFollowing: true }); }
   async prepareChat({ signal, automatic = false, authorizePrepare } = {}) {
     if (automatic && (typeof this.browser.prepareChat !== 'function' || typeof authorizePrepare !== 'function')) throw Object.assign(new Error('自动准备入口不支持可信准备保护，未读取或新建页面。'), { code: 'CHAT_PREPARE_UNSUPPORTED' });
     const policy = validatePolicy(load(this.policyFile, this.policy));
